@@ -566,6 +566,11 @@ static void handleInput (char c) { //this is fine, but needs to be extended to a
 						Serial.println("Error - can't set tree id without first setting destination (use d)");
 					}
 				}
+            case 'x':   // Put all trees into identify mode
+                specialPacket.mode = SPECIAL_PACKET_ID_MODE;
+                readyToSend = SPECIAL_READY_TO_SEND;
+                Serial.print(F("Putting all trees into id mode."));
+                break;
 			/*case 's':
 				cmd = c;
 				sendLen = top; //top is a pointer to the top of the stack, so it gives the number of values stored
