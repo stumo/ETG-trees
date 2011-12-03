@@ -1,3 +1,6 @@
+#ifndef __ETG_H__
+#define __ETG_H__
+
 ;typedef struct {
     byte nodeId;
     byte group;
@@ -220,3 +223,5 @@ void PrintByteWithLeadingZeroes(byte val){
 }
 
 static char BACKSPACE = 8;
+
+#endif // __ETG_H__
