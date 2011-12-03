@@ -566,6 +566,7 @@ static void handleInput (char c) { //this is fine, but needs to be extended to a
 						Serial.println("Error - can't set tree id without first setting destination (use d)");
 					}
 				}
+                break;
             case 'x':   // Put all trees into identify mode
                 specialPacket.mode = SPECIAL_PACKET_ID_MODE;
                 readyToSend = SPECIAL_READY_TO_SEND;
