@@ -5,36 +5,108 @@
     word crc;
 } RF12Config;
 
-typedef struct {
+class ETGPacket {
+public:
 	bool instrType; //0 if dimmer, 1 if memory
-	bool elOn;
+//	bool elOn;
 	byte pwmLevels[16];
 	byte memIndex;
 	unsigned int fadeTime; // time in deciseconds
-} ETGPacket;
+	byte which_trees;  // Bitmask for which trees the packet applies to - it applies to tree n iff  ( which_trees & 1 << (n-1) ).
+	                   // If which_trees is 0xff, even trees without an ID obey
 
+	ETGPacket(){ //Constructor
+	    memset(this, 0, sizeof(this));
+	}
 
-typedef struct {
+	void print(){
+	    Serial.print("Packet:");
+	    if(which_trees == 0xff){
+		Serial.print("(All Trees)");
+	    }else if(which_trees == 0){
+		Serial.print(" *** NO TREES *** ");
+	    }else{
+		Serial.print("Trees ");
+		for(int i = 0; i < 6; i++ ){
+		    if(which_trees & 1 << i){
+			Serial.print(i+1);
+			Serial.print(' ');
+		    }
+		}
+	    }
+	    if(instrType){
+		    Serial.print("Mem[");
+		    Serial.print(memIndex);
+		    Serial.print("] ");
+	    }else{
+		    Serial.print("Dim:[");
+		    for(int i=0;i<16;i++){
+			    if(i){
+				    Serial.print(",");
+			    }
+			    Serial.print(pwmLevels[i], HEX);
+		    }
+		    Serial.print("]");
+	    }
+/*	    Serial.print("EL Wire ");
+	    if(packet.elOn){
+		    Serial.print("On");
+	    }else{
+		    Serial.print("Off");
+	    }
+*/	    Serial.print(" Fade Time ");
+	    Serial.print(fadeTime);
+	    Serial.println("ms");
+	}
+};
+
+class ETGPackedPacket {   // The reason for the odd order below is to try to keep things lining up to 16 bit boundaries, so that everything gets packed in OK.
+public:
 	unsigned instrType : 1; //0 if dimmer, 1 if memory
-	unsigned elOn : 1;
 	unsigned pwmLevel_00 : 3;
 	unsigned pwmLevel_01 : 3;
 	unsigned pwmLevel_02 : 3;
 	unsigned pwmLevel_03 : 3;
-	unsigned pwmLevel_04 : 3;
+	unsigned pwmLevel_04 : 3;   // 16 bits
+//	unsigned elOn        : 1;
+	unsigned all_trees   : 1;
 	unsigned pwmLevel_05 : 3;
 	unsigned pwmLevel_06 : 3;
 	unsigned pwmLevel_07 : 3;
 	unsigned pwmLevel_08 : 3;
-	unsigned pwmLevel_09 : 3;
+	unsigned pwmLevel_09 : 3;   //32 bits
 	unsigned pwmLevel_10 : 3;
 	unsigned pwmLevel_11 : 3;
 	unsigned pwmLevel_12 : 3;
 	unsigned pwmLevel_13 : 3;
 	unsigned pwmLevel_14 : 3;
+	unsigned tree_6:       1;   //48 bits   - This is really part of "which_trees" below, but can't go there because of word boundaries.
 	unsigned pwmLevel_15 : 3;
-	unsigned fadeTime : 8; // time in deciseconds
-} ETGPackedPacket;
+	unsigned which_trees : 5;    // Don't forget the tree_6 above
+	unsigned fadeTime    : 8;  // time - compressed using milliToTransmit
+
+	ETGPackedPacket(){ //Constructor
+	    memset(this, 0, sizeof(this));
+	}
+};
+
+enum { SPECIAL_PACKET_TREE_ID = 0, SPECIAL_PACKET_ID_MODE};
+
+enum { SPECIAL_PACKET_SECRET_VALUE = 0xE76 };  // If you squint it looks like ETG
+
+
+class ETGSpecialPacket {
+    public:
+	unsigned mode: 2;     // 00: set tree id   01:  id-mode  rest left for future expansion
+	unsigned tree_id: 3;     // bits for tree id
+	unsigned int check;    // Used to reduce chances of another device's packet being misinterpreted;
+
+    ETGSpecialPacket() : mode(0), tree_id(0),  check(SPECIAL_PACKET_SECRET_VALUE) {};  // Sets default values. If you squint, it looks like ETG
+    boolean verify(){
+	return check == SPECIAL_PACKET_SECRET_VALUE;
+    }
+};
+
 
 int transmitToMilli(byte transmitTime) {
 	int milliTime = ((int)transmitTime) * 100;
@@ -44,12 +116,12 @@ int transmitToMilli(byte transmitTime) {
 byte milliToTransmit(int milliTime) {
 	byte transmitTime;
 	milliTime /= 100;
-	
-	if(milliTime > 255) 
+
+	if(milliTime > 255)
 		transmitTime = 255;
 	else
 		transmitTime = milliTime;
-	
+
 	return transmitTime;
 }
 
@@ -63,8 +135,8 @@ byte threebit_to_byte(byte source){
 
 void etg_pack(const ETGPacket& source, ETGPackedPacket& dest){
 	dest.instrType = source.instrType ? 1 : 0;
-	dest.elOn =      source.elOn      ? 1 : 0;
-	dest.pwmLevel_00 = byte_to_threebit( source.pwmLevels[ 0]);
+//	dest.elOn =      source.elOn      ? 1 : 0;
+	dest.pwmLevel_00 = byte_to_threebit( source.pwmLevels[ 0]  );
 	dest.pwmLevel_01 = byte_to_threebit( source.pwmLevels[ 1]  );
 	dest.pwmLevel_02 = byte_to_threebit( source.pwmLevels[ 2]  );
 	dest.pwmLevel_03 = byte_to_threebit( source.pwmLevels[ 3]  );
@@ -81,27 +153,35 @@ void etg_pack(const ETGPacket& source, ETGPackedPacket& dest){
 	dest.pwmLevel_14 = byte_to_threebit( source.pwmLevels[14]  );
 	dest.pwmLevel_15 = byte_to_threebit( source.pwmLevels[15]  );
 	dest.fadeTime = milliToTransmit(source.fadeTime);
+	dest.which_trees = source.which_trees & 31;
+	dest.tree_6 = source.which_trees & 32 ? 1 : 0;
+	dest.all_trees = source.which_trees == 0xff ? 1 : 0;
 }
 
 void etg_unpack(const ETGPackedPacket& source, ETGPacket& dest){
+	if(source.all_trees){
+	    dest.which_trees = 0xff;
+	}else{
+	    dest.which_trees = source.which_trees | (source.tree_6 << 5);
+	}
 	dest.instrType = source.instrType;
-	dest.elOn = source.elOn;
+//	dest.elOn = source.elOn;
 	dest.pwmLevels[ 0] = threebit_to_byte( source.pwmLevel_00 );
 	dest.pwmLevels[ 1] = threebit_to_byte( source.pwmLevel_01 );
 	dest.pwmLevels[ 2] = threebit_to_byte( source.pwmLevel_02 );
-	dest.pwmLevels[ 3] = threebit_to_byte( source.pwmLevel_03 );		
+	dest.pwmLevels[ 3] = threebit_to_byte( source.pwmLevel_03 );
 	dest.pwmLevels[ 4] = threebit_to_byte( source.pwmLevel_04 );
 	dest.pwmLevels[ 5] = threebit_to_byte( source.pwmLevel_05 );
 	dest.pwmLevels[ 6] = threebit_to_byte( source.pwmLevel_06 );
-	dest.pwmLevels[ 7] = threebit_to_byte( source.pwmLevel_07 );		
+	dest.pwmLevels[ 7] = threebit_to_byte( source.pwmLevel_07 );
 	dest.pwmLevels[ 8] = threebit_to_byte( source.pwmLevel_08 );
 	dest.pwmLevels[ 9] = threebit_to_byte( source.pwmLevel_09 );
 	dest.pwmLevels[10] = threebit_to_byte( source.pwmLevel_10 );
-	dest.pwmLevels[11] = threebit_to_byte( source.pwmLevel_11 );		
+	dest.pwmLevels[11] = threebit_to_byte( source.pwmLevel_11 );
 	dest.pwmLevels[12] = threebit_to_byte( source.pwmLevel_12 );
 	dest.pwmLevels[13] = threebit_to_byte( source.pwmLevel_13 );
 	dest.pwmLevels[14] = threebit_to_byte( source.pwmLevel_14 );
-	dest.pwmLevels[15] = threebit_to_byte( source.pwmLevel_15 );		
+	dest.pwmLevels[15] = threebit_to_byte( source.pwmLevel_15 );
 	dest.fadeTime = transmitToMilli(source.fadeTime);
 }
 
@@ -125,7 +205,7 @@ enum rf12DataRates {
 void etg_rf12_setup(){
   // rf12_control(RF12_DATA_RATE_5);
   // Serial.println(	"Speed set to Data Rate 5");
-  
+
   // This wasn't working, no idea why
 }
 

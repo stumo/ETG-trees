@@ -12,7 +12,6 @@
 PortI2C dimmerPort (3);
 DimmerPlug dimmer (dimmerPort, 0x40);
 RF12Config config;
-ETGPacket packet;
 //Port elWire (2);
 byte fadeTime;
 byte value, stack[RF12_MAXDATA], top, sendLen, dest, quiet;
@@ -24,8 +23,15 @@ int fadeTimeMillis;
 unsigned long fadeStartMillis;
 MilliTimer milliTimer;
 boolean fadeRunning;
+boolean idMode;
+int idModeFlashCount;
+MilliTimer idModeChangeTimer;
 
-char helpText1[] PROGMEM = 
+byte tree_id;
+
+#define TREE_EEPROM_START_BYTE (RF12_EEPROM_EKEY + RF12_EEPROM_ELEN)
+
+char helpText1[] PROGMEM =
     "\n"
     "Available commands:" "\n"
     "  <nn> i     - set node ID (standard node ids are 1..26)" "\n"
@@ -58,23 +64,23 @@ static void saveConfig() {
 	// set up a nice config string to be shown on startup
 	memset(config.msg, 0, sizeof config.msg);
     strcpy(config.msg, " ");
-    
+
     byte id = config.nodeId & 0x1F;
     addCh(config.msg, '@' + id);
     strcat(config.msg, " i");
     addInt(config.msg, id);
     if (config.nodeId & COLLECT)
         addCh(config.msg, '*');
-    
+
     strcat(config.msg, " g");
     addInt(config.msg, config.group);
-    
+
     strcat(config.msg, " @ ");
     static word bands[4] = { 315, 433, 868, 915 };
     word band = config.nodeId >> 6;
     addInt(config.msg, bands[band]);
     strcat(config.msg, " MHz ");
-    
+
     config.crc = ~0;
     for (byte i = 0; i < sizeof config - 2; ++i)
         config.crc = _crc16_update(config.crc, ((byte*) &config)[i]);
@@ -84,7 +90,7 @@ static void saveConfig() {
         byte b = ((byte*) &config)[i];
         eeprom_write_byte(RF12_EEPROM_ADDR + i, b);
     }
-    
+
     if (!rf12_config())
         Serial.println("config save failed");
 }
@@ -119,12 +125,12 @@ static void addInt (char* msg, word v) {
         df_deselect();
 
         scanForLastSave();
-        
+
         Serial.print("DF I ");
         Serial.print(dfLastPage);
         Serial.print(' ');
         Serial.println(dfBuf.seqnum);
-    
+
         // df_wipe();
         df_saveBuf(); //XXX
     }
@@ -133,12 +139,12 @@ static void addInt (char* msg, word v) {
 static void handleInput (char c) { //this is fine, but needs to be extended to allow for actual instructions rather than just config
 	if ('0' <= c && c <= '9')
         value = 10 * value + c - '0'; //this takes the ASCII digits of a decimal number and reads them from left to right, at the end 'value' holds the integer equal to the number represented in decimal.
-		
+
 	else if (c == ',') {
         if (top < sizeof stack)
             stack[top++] = value;
         value = 0;
-	
+
 	} else if ('a' <= c && c <='z') {
         Serial.print("> ");
         Serial.print((int) value);
@@ -163,7 +169,7 @@ static void handleInput (char c) { //this is fine, but needs to be extended to a
 				config.nodeId = (config.nodeId & 0xE0) + (value & 0x1F);
                 saveConfig();
                 break;
-			
+
 			/*case 'a':
 			case 's':
 				cmd = c;
@@ -171,7 +177,7 @@ static void handleInput (char c) { //this is fine, but needs to be extended to a
 				dest = value;
 				memcpy(testbuf, stack, top);
 				break;*/
-		} 
+		}
 		value = 0;
 		top = 0;
 		memset(stack, 0, sizeof stack); //sets the stack to 0 as a letter has been reached
@@ -180,15 +186,17 @@ static void handleInput (char c) { //this is fine, but needs to be extended to a
 }
 
 void FadeToTarget(const ETGPacket packet){
-    milliTimer.set(10);
-    fadeTimeMillis = packet.fadeTime; //take the transmitted time (in deciseconds) and convert it to a useful time (in milliseconds)
-                    
-    fadeRunning = true;
-    fadeStartMillis = millis();
-    for(int i=0; i<16; i++){
-	startLevels[i] = currentLevels[i];
-	targetLevels[i] = packet.pwmLevels[i];
-	deltas[i] = ((int) targetLevels[i] ) - currentLevels[i];
+    if(packet.which_trees == 0xff || packet.which_trees & 1 << (tree_id - 1 )){
+	milliTimer.set(10);
+	fadeTimeMillis = packet.fadeTime; //take the transmitted time (in deciseconds) and convert it to a useful time (in milliseconds)
+
+	fadeRunning = true;
+	fadeStartMillis = millis();
+	for(int i=0; i<16; i++){
+	    startLevels[i] = currentLevels[i];
+	    targetLevels[i] = packet.pwmLevels[i];
+	    deltas[i] = ((int) targetLevels[i] ) - currentLevels[i];
+	}
     }
 }
 
@@ -198,7 +206,7 @@ void setup() { //this is complete
 	Serial.print("\nWelcome to the ETG 2011 Wireless Control Interface (receiver node)\n");
 	dimmer.begin();
     dimmer.setReg(dimmer.MODE2,0x14);
-	
+
 	//Check to see if a config exists in the EEPROM. If not, use a default config then save it to EEPROM
 	if (rf12_config()) {
 		etg_rf12_setup();
@@ -212,8 +220,44 @@ void setup() { //this is complete
 	for(int i = 0; i < 16; i++) {
 		currentLevels[i] = startLevel;
 	}
+
+	// get tree id
+
+	byte tree_byte = eeprom_read_byte(TREE_EEPROM_START_BYTE);
+	if( tree_byte && ( tree_byte & 0xf == tree_byte >> 4) && (tree_byte & 0xf <= 7) ){ // If this confuses, see setTreeId();
+	    // It's good!
+	    tree_id = tree_byte & 0xf;
+	    if(tree_id == 7){
+		tree_id = 0;
+	    }
+	}else{
+	    setTreeId(0);
+	}
+
+	Serial.print("Tree Id:");
+	Serial.println(tree_id);
+
 	//elWire.mode(OUTPUT);
 	showHelp();
+}
+
+void setTreeId(byte id){
+/* We have a slightly complicated tree byte structure to ensure we don't just
+  assign a tree an id from a previously unprogramed eeprom byte,
+  and working on the basis that the bytes may well start out as zero. So, we map
+  tree id zero to 7, making tree_id a 3 bit value (001 to 111 in binary). We repeat
+  that again, shifted 4 bits - giving 00010001 00100010 etc. to 01110111
+*/
+    if(id > 7 || id == 0){
+	setTreeId(7);
+    }else{
+	byte to_write = id | ( id << 4 );
+	eeprom_write_byte(TREE_EEPROM_START_BYTE, to_write);
+	tree_id = id;
+	if(tree_id == 7){
+	    tree_id = 0;
+	}
+    }
 }
 
 int patch(int val){
@@ -228,7 +272,7 @@ void loop() { //this is a work in progress
 //	}
     if(Serial.available()){
 	char c = Serial.read();
-	
+
 	if (c == 'u' || c == 'd'){
 	    ETGPacket packet;
 	    byte target = (c == 'u' ? 255 : 0);
@@ -236,10 +280,11 @@ void loop() { //this is a work in progress
 	    for(int i=0; i<16; i++){
 		packet.pwmLevels[i] = target;
 	    }
+	    packet.which_trees = 0xff;
 	    FadeToTarget(packet);
 	}
     }
-    if (rf12_recvDone()) {  
+    if (rf12_recvDone()) {
         byte n = rf12_len;
         if (rf12_crc == 0) {
             Serial.print("OK");
@@ -259,50 +304,92 @@ void loop() { //this is a work in progress
             Serial.print((int) rf12_data[i]);
         }
         Serial.println();
-        
-		ETGPackedPacket packed;
-		
-        if (rf12_crc == 0 && n == sizeof(ETGPackedPacket)) {
+        if (rf12_crc == 0 && ( n == sizeof(ETGPackedPacket) || n == sizeof(ETGSpecialPacket) ) ) {
 
             if (RF12_WANTS_ACK && (config.nodeId & COLLECT) == 0) {
                 Serial.println(" -> ack");
                 rf12_sendStart(RF12_ACK_REPLY, 0, 0);
             }
-            memcpy(&packed, (void*) rf12_data, sizeof(ETGPackedPacket));
-			etg_unpack(packed, packet);
-            
-			Serial.print("Packet:");
-			if(packet.instrType){
-				Serial.print("Mem[");
-				Serial.print(packet.memIndex);
-				Serial.print("] ");
-			}else{
-				Serial.print("Dim:[");
-				for(int i=0;i<16;i++){
-					if(i){
-						Serial.print(",");
-					}
-					Serial.print((int) packet.pwmLevels[i]);
-				}
-				Serial.print("]");
-			}
-			Serial.print("EL Wire ");
-			if(packet.elOn){
-				Serial.print("On");
-			}else{
-				Serial.print("Off");
-			}
-			Serial.print(" Fade Time ");
-			Serial.print(packet.fadeTime);
-			Serial.println("ms");
-			
-            if(packet.instrType) { // case of memory instruction
-                    Serial.print("Memory instructions haven't been implemented...");
-            } else { //case of fade instruction
-                    //elWire.digiWrite(!packet.elOn);
-		    FadeToTarget(packet);
-            }
-        }
+	    if(n == sizeof(ETGPackedPacket) ) {
+		ETGPackedPacket packed;
+		idMode = false;
+		memcpy(&packed, (void*) rf12_data, sizeof(ETGPackedPacket));
+		ETGPacket packet;
+		etg_unpack(packed, packet);
+		packet.print();
+
+		if(packet.instrType) { // case of memory instruction
+			Serial.print("Memory instructions haven't been implemented...");
+		} else { //case of fade instruction
+			//elWire.digiWrite(!packet.elOn);
+			FadeToTarget(packet);
+		}
+	    }else if(rf12_crc == 0 && n == sizeof (ETGSpecialPacket)){
+		ETGSpecialPacket sp;
+		memcpy(&sp, (void*) rf12_data, sizeof(ETGSpecialPacket));
+		if(sp.verify()){
+		    Serial.print("Special packet verified.");
+		    switch(sp.mode){
+			case SPECIAL_PACKET_TREE_ID:
+			    setTreeId(sp.tree_id);
+			    break;
+			case SPECIAL_PACKET_ID_MODE:
+			    idMode = true;
+			    idModeFlashCount = 0;
+			    idModeChangeTimer.set(1);
+			    break;
+		    }
+		}else{
+		    Serial.print("Special packet failed verification.");
+		}
+	    }
+	}
+    }
+    if(idMode && idModeChangeTimer.poll(0)){ // We're in idMode, and it's time for a state change.
+	/*  The idea behind idMode is that all trees will flash according to their tree ID.
+	   If no tree id is set, then fade up and down over 4 seconds
+	   If a tree id is set, flash that many times, then pause
+	*/
+
+	ETGPacket fakePacket;
+	byte level;
+	if(tree_id > 0){ // This tree has an id.
+	    /* here we use idModeFlashCount thus:
+	      0 - idMode has just started, or had a pause;
+	      +ve : We've completed that many ID flashes;
+	      -ve: We've completed that many ID flashes, and the
+		interveening gap (so we're ready for 1 more flash) */
+	    fakePacket.fadeTime = 0;
+	    fakePacket.which_trees = 0xff;
+	    if(idModeFlashCount <= 0){ // Currently off - turn on!
+		idModeFlashCount = -idModeFlashCount + 1;
+		level = 255;
+		idModeChangeTimer.set(2000 / tree_id);
+	    }else{ // Currently on
+		level = 0;
+		if(idModeFlashCount == tree_id){
+		    idModeChangeTimer.set( tree_id == 1 ? 3000 : 2000 );
+		    idModeFlashCount = 0;
+		}else{
+		    idModeChangeTimer.set(1000 / (tree_id - 1 ));
+		    idModeFlashCount = - idModeFlashCount;
+		}
+	    }
+	}else{
+	    fakePacket.fadeTime = 1900;
+	    idModeChangeTimer.set(2000);
+	    if(idModeFlashCount){
+		level = 255;
+		idModeFlashCount = 0;
+	    }else{
+		level = 0;
+		idModeFlashCount = -1;
+	    }
+	}
+	for(int i = 0; i < 16; i++){
+	    fakePacket.pwmLevels[i] = level;
+	}
+	FadeToTarget(fakePacket);
     }
     if(fadeRunning){
         if(milliTimer.poll(10)){ //Returns true every 10 milliseconds;

@@ -11,8 +11,11 @@
 static RF12Config config;
 
 static ETGPacket packet;
+static ETGSpecialPacket specialPacket;
 
-boolean readyToSend = false;
+typedef enum {NOTHING_TO_SEND = 0, NORMAL_READY_TO_SEND, SPECIAL_READY_TO_SEND} SendStatus;
+
+SendStatus readyToSend = NOTHING_TO_SEND;
 
 static byte dest, stack[RF12_MAXDATA], top, sendLen, cmd;
 
@@ -22,23 +25,23 @@ static void saveConfig() {
 	// set up a nice config string to be shown on startup
 	memset(config.msg, 0, sizeof config.msg);
     strcpy(config.msg, " ");
-    
+
     byte id = config.nodeId & 0x1F;
     addCh(config.msg, '@' + id);
     strcat(config.msg, " i");
     addInt(config.msg, id);
     if (config.nodeId & COLLECT)
         addCh(config.msg, '*');
-    
+
     strcat(config.msg, " g");
     addInt(config.msg, config.group);
-    
+
     strcat(config.msg, " @ ");
     static word bands[4] = { 315, 433, 868, 915 };
     word band = config.nodeId >> 6;
     addInt(config.msg, bands[band]);
     strcat(config.msg, " MHz ");
-    
+
     config.crc = ~0;
     for (byte i = 0; i < sizeof config - 2; ++i)
         config.crc = _crc16_update(config.crc, ((byte*) &config)[i]);
@@ -48,7 +51,7 @@ static void saveConfig() {
         byte b = ((byte*) &config)[i];
         eeprom_write_byte(RF12_EEPROM_ADDR + i, b);
     }
-    
+
     if (!rf12_config())
         Serial.println("config save failed");
 }
@@ -150,7 +153,7 @@ void df_command (byte cmd) {
         // don't wait for ready bit if there is clearly no dataflash connected
         if (status == 0xFF || (status & 1) == 0)
             break;
-    }    
+    }
 
     cli();
     df_enable();
@@ -195,7 +198,7 @@ void df_flush () {
 
 static void df_wipe () {
     Serial.println("DF W");
-    
+
     df_writeCmd(0xC7); // Chip Erase
     df_deselect();
     df_flush();
@@ -204,7 +207,7 @@ static void df_wipe () {
 static void df_erase (word block) {
     Serial.print("DF E ");
     Serial.println(block);
-    
+
     df_writeCmd(DF_PAGE_ERASE); // Block Erase
     df_xfer(block >> 8);
     df_xfer(block);
@@ -224,7 +227,7 @@ static void df_saveBuf () {
     dfLastPage = df_wrap(dfLastPage + 1);
     if (dfLastPage == DF_LOG_BEGIN)
         ++dfBuf.seqnum; // bump to next seqnum when wrapping
-    
+
     // set remainder of buffer data to 0xFF and calculate crc over entire buffer
     dfBuf.crc = ~0;
     for (byte i = 0; i < sizeof dfBuf - 2; ++i) {
@@ -232,10 +235,10 @@ static void df_saveBuf () {
             dfBuf.data[i] = 0xFF;
         dfBuf.crc = _crc16_update(dfBuf.crc, dfBuf.data[i]);
     }
-    
+
     df_write(dfLastPage, &dfBuf);
     dfFill = 0;
-    
+
     // wait for write to finish before reporting page, seqnum, and time stamp
     df_flush();
     Serial.print("DF S ");
@@ -244,7 +247,7 @@ static void df_saveBuf () {
     Serial.print(dfBuf.seqnum);
     Serial.print(' ');
     Serial.println(dfBuf.timestamp);
-    
+
     // erase next block if we just saved data into a fresh block
     // at this point in time dfBuf is empty, so a lengthy erase cycle is ok
     if (dfLastPage % DF_BLOCK_SIZE == 0)
@@ -257,7 +260,7 @@ static void df_append (const void* buf, byte len) {
     // fill in page time stamp when appending to a fresh page
     if (dfFill == 0)
         dfBuf.timestamp = now();
-    
+
     long offset = now() - dfBuf.timestamp;
     if (offset >= 255 || dfFill + 1 + len > sizeof dfBuf.data) {
         df_saveBuf();
@@ -303,12 +306,12 @@ static void df_initialize () {
         df_deselect();
 
         scanForLastSave();
-        
+
         Serial.print("DF I ");
         Serial.print(dfLastPage);
         Serial.print(' ');
         Serial.println(dfBuf.seqnum);
-    
+
         // df_wipe();
         df_saveBuf(); //XXX
     }
@@ -432,7 +435,7 @@ static void df_replay (word seqnum, long asof) {
 
 #endif
 
-char helpText1[] PROGMEM = 
+char helpText1[] PROGMEM =
     "\n"
     "Available commands:" "\n"
     "  <nn> i     - set node ID (standard node ids are 1..26)" "\n"
@@ -464,12 +467,12 @@ static void showHelp () {
 static void handleInput (char c) { //this is fine, but needs to be extended to allow for actual instructions rather than just config
 	if ('0' <= c && c <= '9')
         value = 10 * value + c - '0'; //this takes the ASCII digits of a decimal number and reads them from left to right, at the end 'value' holds the integer equal to the number represented in decimal.
-		
+
 	else if (c == ',') {
         if (top < sizeof stack)
             stack[top++] = value;
         value = 0;
-	
+
 	} else if ('a' <= c && c <='z') {
         Serial.print("> ");
         Serial.print((int) value);
@@ -485,7 +488,7 @@ static void handleInput (char c) { //this is fine, but needs to be extended to a
                 saveConfig();
                 break;
 			case 'd': //Dimmer command: e.g. 128, 128, 0, ... , 0d sets the first 2 LED channels to 128/255 brightness
-				
+
 				if(top <= 16) { //i.e. there are 16 values on the stack before this one.
 					for(int i = 0; i < top; i++) {
 						packet.pwmLevels[i] = stack[i];
@@ -506,11 +509,11 @@ static void handleInput (char c) { //this is fine, but needs to be extended to a
 				break;
 			case 'c': //Command type option
 				packet.instrType = value;
-				
+
 				break;
-			case 'e': //EL wire setting
+/*			case 'e': //EL wire setting
 				packet.elOn = value;
-				break;
+				break;  */
 			case 'g': // set network group
                 config.group = value;
 				value = 0;
@@ -525,17 +528,44 @@ static void handleInput (char c) { //this is fine, but needs to be extended to a
 				config.nodeId = (config.nodeId & 0xE0) + (value & 0x1F);
                 saveConfig();
                 break;
-			
+
 			case 'a':
 				dest = value;
 				break;
 			case 'f':
 			case 'o':
-				byte target = ( c == 'f' ? 255 : 0);
-				for(int i = 0; i < 16 ; i++){
-					packet.pwmLevels[i] = target; 
+				{  //Block so we can create the 'target' variable.
+					byte target = ( c == 'f' ? 255 : 0);
+					for(int i = 0; i < 16 ; i++){
+						packet.pwmLevels[i] = target;
+					}
+					packet.which_trees = 0xff;
+					break;
+				}
+			case 'q':
+				packet.which_trees = 0;
+				for(int i = 0; i < top; i++){
+					if(stack[i] == 9){
+						packet.which_trees = 0xff;
+					}else if(stack[i] > 0 && stack[i] <= 6){
+						packet.which_trees = packet.which_trees | ( 1 << ( stack[i] - 1) );
+					}
 				}
 				break;
+			case 'p':
+				if(value <= 6){
+					specialPacket.mode = SPECIAL_PACKET_TREE_ID;
+					specialPacket.tree_id = value;
+					if(dest){
+						readyToSend = SPECIAL_READY_TO_SEND;
+						Serial.print("Setting JeeNode ");
+						Serial.print(dest);
+						Serial.print(" to tree ");
+						Serial.println(value);
+					}else{
+						Serial.println("Error - can't set tree id without first setting destination (use d)");
+					}
+				}
 			/*case 's':
 				cmd = c;
 				sendLen = top; //top is a pointer to the top of the stack, so it gives the number of values stored
@@ -548,7 +578,8 @@ static void handleInput (char c) { //this is fine, but needs to be extended to a
 		memset(stack, 0, sizeof stack); //sets the stack to 0 as a letter has been reached
 	} else if (c == ';'){
 		sendLen = sizeof(packet);
-		readyToSend = true;
+		readyToSend = NORMAL_READY_TO_SEND;
+		packet.print();
 		Serial.println("Ready to send");
 	} else if (c >= 'A')
 		showHelp();
@@ -568,7 +599,7 @@ static void showString (PGM_P s) {
 void setup() { //this is complete
 	Serial.begin(57600);
 	Serial.print("\nWelcome to the ETG 2011 Wireless Control Interface (transmitter node)");
-	
+
 	//Check to see if a config exists in the EEPROM. If not, use a default config then save it to EEPROM
 	if (rf12_config()) {
 		etg_rf12_setup();
@@ -576,24 +607,33 @@ void setup() { //this is complete
 		Serial.println("Warning - node id not set");
     }
 	showHelp();
+	packet.which_trees = 0xff;
 }
-MilliTimer ackWait; 
+
+MilliTimer ackWait;
 
 void loop() { //this is a work in progress
     if (rf12_recvDone()){
-		// Ignore... for now. Could check for ACK 
+		// Ignore... for now. Could check for ACK
 	}
 	if (Serial.available())
 		handleInput(Serial.read());
-		
+
 	if (readyToSend){
-		Serial.println(" Checking if can send"); 
+		Serial.println(" Checking if can send");
 		bool sent = false;
 		int send_attempts = 0;
 		if(rf12_canSend()) {
+			void* data;
 			ETGPackedPacket packed;
-			etg_pack(packet, packed);
-			sendLen = sizeof(packed);		
+			if(readyToSend == NORMAL_READY_TO_SEND){
+				etg_pack(packet, packed);
+				sendLen = sizeof(packed);
+				data = &packed;
+			}else{
+				sendLen = sizeof(specialPacket);
+				data = &specialPacket;
+			}
 			while(( ! sent ) && send_attempts < 20){
 				Serial.print(" -> ");
 				Serial.print((int) sendLen);
@@ -601,7 +641,7 @@ void loop() { //this is a work in progress
 				byte header = RF12_HDR_ACK;
 				if (dest)
 					header |= RF12_HDR_DST | dest;
-				rf12_sendStart(header, &packed, sendLen);
+				rf12_sendStart(header, data, sendLen);
 				cmd = 0;
 				send_attempts++;
 				rf12_sendWait(1); // Waits until we've completed sending before we look for an Ack
@@ -611,7 +651,7 @@ void loop() { //this is a work in progress
 					if(rf12_recvDone() )
 					{
 					   if(rf12_crc == 0  && rf12_len == 0 && (rf12_hdr & RF12_HDR_CTL) ){
-						// We got an ACK 
+						// We got an ACK
 						sent = true;
 						Serial.print("ACK after ");
 						Serial.print(send_attempts);
@@ -639,9 +679,9 @@ void loop() { //this is a work in progress
 				Serial.println(" attempts");
 			}
 
-			readyToSend = false;
+			readyToSend = NOTHING_TO_SEND;
 		}else{
-			Serial.println("Not ready to send yet"); 
+			Serial.println("Not ready to send yet");
 		}
     }
 }
