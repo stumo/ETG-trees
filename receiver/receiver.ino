@@ -319,7 +319,7 @@ void loop() { //this is a work in progress
 		packet.print();
 
 		if(packet.instrType) { // case of memory instruction
-			Serial.print("Memory instructions haven't been implemented...");
+			Serial.print(F("Memory instructions haven't been implemented..."));
 		} else { //case of fade instruction
 			//elWire.digiWrite(!packet.elOn);
 			FadeToTarget(packet);
@@ -328,7 +328,7 @@ void loop() { //this is a work in progress
 		ETGSpecialPacket sp;
 		memcpy(&sp, (void*) rf12_data, sizeof(ETGSpecialPacket));
 		if(sp.verify()){
-		    Serial.print("Special packet verified.");
+		    Serial.print(F("Special packet verified."));
 		    switch(sp.mode){
 			case SPECIAL_PACKET_TREE_ID:
 			    setTreeId(sp.tree_id);
@@ -340,7 +340,7 @@ void loop() { //this is a work in progress
 			    break;
 		    }
 		}else{
-		    Serial.print("Special packet failed verification.");
+		    Serial.print(F("Special packet failed verification."));
 		}
 	    }
 	}

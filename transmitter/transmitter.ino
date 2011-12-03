@@ -499,9 +499,9 @@ static void handleInput (char c) { //this is fine, but needs to be extended to a
 						}
 					}
 					Serial.print( (int) top);
-					Serial.println(" values saved.");
+					Serial.println(F(" values saved."));
 				} else {
-					Serial.print("Need at most 16 values before a 'd' command");
+					Serial.print(F("Need at most 16 values before a 'd' command"));
 				}
 				break;
 			case 't': //time command. Only applies to dimmer commands but sets the time, in milliseconds, it ought to take.
@@ -521,7 +521,7 @@ static void handleInput (char c) { //this is fine, but needs to be extended to a
                 saveConfig();
                 break;
 			case 'm': //memory command e.g. 5m selects macro index 5
-				Serial.print("Memory commands haven't been implemented yet :s");
+				Serial.print(F("Memory commands haven't been implemented yet :s"));
 				packet.memIndex = value;
 				break;
 			case 'i': //set node id
@@ -532,8 +532,8 @@ static void handleInput (char c) { //this is fine, but needs to be extended to a
 			case 'a':
 				dest = value;
 				break;
-			case 'f':
-			case 'o':
+			case 'f':   // Full
+			case 'o':   // Off 
 				{  //Block so we can create the 'target' variable.
 					byte target = ( c == 'f' ? 255 : 0);
 					for(int i = 0; i < 16 ; i++){
@@ -542,7 +542,7 @@ static void handleInput (char c) { //this is fine, but needs to be extended to a
 					packet.which_trees = 0xff;
 					break;
 				}
-			case 'q':
+			case 'q':  // Specify specific trees - e.g. 1,2,3,q - only trees 1, 2 and 3 will activate. Use 9 to activate all. 
 				packet.which_trees = 0;
 				for(int i = 0; i < top; i++){
 					if(stack[i] == 9){
@@ -552,20 +552,21 @@ static void handleInput (char c) { //this is fine, but needs to be extended to a
 					}
 				}
 				break;
-			case 'p':
+			case 'p':  // Allocate a tree id to a specific jee node. 
 				if(value <= 6){
 					specialPacket.mode = SPECIAL_PACKET_TREE_ID;
 					specialPacket.tree_id = value;
 					if(dest){
 						readyToSend = SPECIAL_READY_TO_SEND;
-						Serial.print("Setting JeeNode ");
+						Serial.print(F("Setting JeeNode "));
 						Serial.print(dest);
-						Serial.print(" to tree ");
+						Serial.print(F(" to tree "));
 						Serial.println(value);
 					}else{
-						Serial.println("Error - can't set tree id without first setting destination (use d)");
+						Serial.println(F("Error - can't set tree id without first setting destination (use d)"));
 					}
 				}
+                break;
 			/*case 's':
 				cmd = c;
 				sendLen = top; //top is a pointer to the top of the stack, so it gives the number of values stored
@@ -580,7 +581,7 @@ static void handleInput (char c) { //this is fine, but needs to be extended to a
 		sendLen = sizeof(packet);
 		readyToSend = NORMAL_READY_TO_SEND;
 		packet.print();
-		Serial.println("Ready to send");
+		Serial.println(F("Ready to send"));
 	} else if (c >= 'A')
 		showHelp();
 }
@@ -598,13 +599,13 @@ static void showString (PGM_P s) {
 
 void setup() { //this is complete
 	Serial.begin(57600);
-	Serial.print("\nWelcome to the ETG 2011 Wireless Control Interface (transmitter node)");
+	Serial.print(F("\nWelcome to the ETG 2011 Wireless Control Interface (transmitter node)"));
 
 	//Check to see if a config exists in the EEPROM. If not, use a default config then save it to EEPROM
 	if (rf12_config()) {
 		etg_rf12_setup();
     } else {
-		Serial.println("Warning - node id not set");
+		Serial.println(F("Warning - node id not set"));
     }
 	showHelp();
 	packet.which_trees = 0xff;
@@ -620,7 +621,7 @@ void loop() { //this is a work in progress
 		handleInput(Serial.read());
 
 	if (readyToSend){
-		Serial.println(" Checking if can send");
+		Serial.println(F(" Checking if can send"));
 		bool sent = false;
 		int send_attempts = 0;
 		if(rf12_canSend()) {
@@ -635,12 +636,16 @@ void loop() { //this is a work in progress
 				data = &specialPacket;
 			}
 			while(( ! sent ) && send_attempts < 20){
-				Serial.print(" -> ");
+				Serial.print(F(" -> "));
 				Serial.print((int) sendLen);
-				Serial.println(" b");
+				Serial.print(F(" b"));
 				byte header = RF12_HDR_ACK;
-				if (dest)
+				if (dest){
+                    Serial.print(F("** NOTE: Sending only to node "));
+                    Serial.print (dest, DEC);
 					header |= RF12_HDR_DST | dest;
+				}
+                Serial.println();
 				rf12_sendStart(header, data, sendLen);
 				cmd = 0;
 				send_attempts++;
@@ -653,12 +658,12 @@ void loop() { //this is a work in progress
 					   if(rf12_crc == 0  && rf12_len == 0 && (rf12_hdr & RF12_HDR_CTL) ){
 						// We got an ACK
 						sent = true;
-						Serial.print("ACK after ");
+						Serial.print(F("ACK after "));
 						Serial.print(send_attempts);
-						Serial.println(" attempts");
+						Serial.println(F(" attempts"));
 						break;
 					   }else{
-						Serial.println("RF12 Recv - not valid");
+						Serial.println(F("RF12 Recv - not valid"));
 						Serial.print((int)rf12_crc);
 						Serial.print(" ");
 						Serial.print((int)rf12_len);
@@ -674,14 +679,14 @@ void loop() { //this is a work in progress
 				}
 			}
 			if(!sent){
-				Serial.println("Gave up sending after ");
+				Serial.println(F("Gave up sending after "));
 				Serial.print(send_attempts);
 				Serial.println(" attempts");
 			}
 
 			readyToSend = NOTHING_TO_SEND;
 		}else{
-			Serial.println("Not ready to send yet");
+			Serial.println(F("Not ready to send yet"));
 		}
     }
 }
