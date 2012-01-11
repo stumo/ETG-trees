@@ -23,6 +23,8 @@ int fadeTimeMillis;
 unsigned long fadeStartMillis;
 MilliTimer milliTimer;
 boolean fadeRunning;
+//boolean pulseRunning;
+//int pulseDelay;
 boolean idMode;
 int idModeFlashCount;
 MilliTimer idModeChangeTimer;
@@ -187,16 +189,16 @@ static void handleInput (char c) { //this is fine, but needs to be extended to a
 
 void FadeToTarget(const ETGPacket packet){
     if(packet.which_trees == 0xff || packet.which_trees & 1 << (tree_id - 1 )){
-	milliTimer.set(10);
-	fadeTimeMillis = packet.fadeTime; //take the transmitted time (in deciseconds) and convert it to a useful time (in milliseconds)
+		milliTimer.set(10);
+		fadeTimeMillis = packet.fadeTime;
 
-	fadeRunning = true;
-	fadeStartMillis = millis();
-	for(int i=0; i<16; i++){
-	    startLevels[i] = currentLevels[i];
-	    targetLevels[i] = packet.pwmLevels[i];
-	    deltas[i] = ((int) targetLevels[i] ) - currentLevels[i];
-	}
+		fadeRunning = true;
+		fadeStartMillis = millis();
+		for(int i=0; i<16; i++){
+			startLevels[i] = currentLevels[i];
+			targetLevels[i] = packet.pwmLevels[i];
+			deltas[i] = ((int) targetLevels[i] ) - currentLevels[i];
+		}
     }
 }
 
@@ -205,11 +207,14 @@ void setup() { //this is complete
 	Serial.begin(57600);
 	Serial.print("\nWelcome to the ETG 2011 Wireless Control Interface (receiver node)\n");
 	dimmer.begin();
+	Serial.println("Dimmer begun");
     dimmer.setReg(dimmer.MODE2,0x14);
+	Serial.println("Dimmer registers set");
 
 	//Check to see if a config exists in the EEPROM. If not, use a default config then save it to EEPROM
 	if (rf12_config()) {
 		etg_rf12_setup();
+		Serial.println("Finished rf12 setup");
     } else {
 		Serial.println("Warning - RF12 Not Set Up");
 	}
@@ -271,18 +276,18 @@ void loop() { //this is a work in progress
 //		Serial.println("Ping");
 //	}
     if(Serial.available()){
-	char c = Serial.read();
+		char c = Serial.read();
 
-	if (c == 'u' || c == 'd'){
-	    ETGPacket packet;
-	    byte target = (c == 'u' ? 255 : 0);
-	    packet.fadeTime = 10000;
-	    for(int i=0; i<16; i++){
-		packet.pwmLevels[i] = target;
-	    }
-	    packet.which_trees = 0xff;
-	    FadeToTarget(packet);
-	}
+		if (c == 'u' || c == 'd'){
+			ETGPacket packet;
+			byte target = (c == 'u' ? 255 : 0);
+			packet.fadeTime = 10000;
+			for(int i=0; i<16; i++){
+				packet.pwmLevels[i] = target;
+			}
+			packet.which_trees = 0xff;
+			FadeToTarget(packet);
+		}
     }
     if (rf12_recvDone()) {
         byte n = rf12_len;
@@ -306,122 +311,131 @@ void loop() { //this is a work in progress
         Serial.println();
         if (rf12_crc == 0 && ( n == sizeof(ETGPackedPacket) || n == sizeof(ETGSpecialPacket) ) ) {
 
-            if (RF12_WANTS_ACK && (config.nodeId & COLLECT) == 0) {
-                Serial.println(" -> ack");
-                rf12_sendStart(RF12_ACK_REPLY, 0, 0);
-            }
-	    if(n == sizeof(ETGPackedPacket) ) {
-		ETGPackedPacket packed;
-		idMode = false;
-		memcpy(&packed, (void*) rf12_data, sizeof(ETGPackedPacket));
-		ETGPacket packet;
-		etg_unpack(packed, packet);
-		packet.print();
+			if (RF12_WANTS_ACK && (config.nodeId & COLLECT) == 0) {
+				Serial.println(" -> ack");
+				delay(config.nodeId*10);
+				rf12_sendStart(RF12_ACK_REPLY, 0, 0);
+			}
+			if(n == sizeof(ETGPackedPacket) ) {
+				ETGPackedPacket packed;
+				idMode = false;
+				memcpy(&packed, (void*) rf12_data, sizeof(ETGPackedPacket));
+				ETGPacket packet;
+				etg_unpack(packed, packet);
+				packet.print();
 
-		if(packet.instrType) { // case of memory instruction
-			Serial.print(F("Memory instructions haven't been implemented..."));
-		} else { //case of fade instruction
-			//elWire.digiWrite(!packet.elOn);
-			FadeToTarget(packet);
+				if(packet.instrType) { // case of memory instruction
+					Serial.print("Memory instructions haven't been implemented...");
+					/*switch(packet.memIndex) {
+						case 1: //"Pulse" instruction, takes two arguments: fade time and delay, but for the required granularity delay spans 16 threebit things. To simplify the code, each threebit actually only represents 1 bit, either zero or non-zero
+							int delay = 0;
+							for(int i = 0; i < 16; i++) {
+								delay = delay | ((packet.pwmLevels[i] ? 1 : 0) << i);
+							}
+							pulseUp(delay, packet.fadeTime);*/
+							
+				} else { //case of fade instruction
+					//elWire.digiWrite(!packet.elOn);
+					FadeToTarget(packet);
+				}
+				}else if(rf12_crc == 0 && n == sizeof (ETGSpecialPacket)){
+					ETGSpecialPacket sp;
+					memcpy(&sp, (void*) rf12_data, sizeof(ETGSpecialPacket));
+					if(sp.verify()){
+						Serial.print("Special packet verified.");
+						switch(sp.mode){
+						case SPECIAL_PACKET_TREE_ID:
+							setTreeId(sp.tree_id);
+							break;
+						case SPECIAL_PACKET_ID_MODE:
+							idMode = true;
+							idModeFlashCount = 0;
+							idModeChangeTimer.set(1);
+							break;
+						}
+					}else{
+						Serial.print("Special packet failed verification.");
+					}
+				}
 		}
-	    }else if(rf12_crc == 0 && n == sizeof (ETGSpecialPacket)){
-		ETGSpecialPacket sp;
-		memcpy(&sp, (void*) rf12_data, sizeof(ETGSpecialPacket));
-		if(sp.verify()){
-		    Serial.print(F("Special packet verified."));
-		    switch(sp.mode){
-			case SPECIAL_PACKET_TREE_ID:
-			    setTreeId(sp.tree_id);
-			    break;
-			case SPECIAL_PACKET_ID_MODE:
-			    idMode = true;
-			    idModeFlashCount = 0;
-			    idModeChangeTimer.set(1);
-			    break;
-		    }
-		}else{
-		    Serial.print(F("Special packet failed verification."));
-		}
-	    }
-	}
     }
     if(idMode && idModeChangeTimer.poll(0)){ // We're in idMode, and it's time for a state change.
-	/*  The idea behind idMode is that all trees will flash according to their tree ID.
-	   If no tree id is set, then fade up and down over 4 seconds
-	   If a tree id is set, flash that many times, then pause
-	*/
+		/*  The idea behind idMode is that all trees will flash according to their tree ID.
+		   If no tree id is set, then fade up and down over 4 seconds
+		   If a tree id is set, flash that many times, then pause
+		*/
 
-	ETGPacket fakePacket;
-	byte level;
-	if(tree_id > 0){ // This tree has an id.
-	    /* here we use idModeFlashCount thus:
-	      0 - idMode has just started, or had a pause;
-	      +ve : We've completed that many ID flashes;
-	      -ve: We've completed that many ID flashes, and the
-		interveening gap (so we're ready for 1 more flash) */
-	    fakePacket.fadeTime = 0;
-	    fakePacket.which_trees = 0xff;
-	    if(idModeFlashCount <= 0){ // Currently off - turn on!
-		idModeFlashCount = -idModeFlashCount + 1;
-		level = 255;
-		idModeChangeTimer.set(2000 / tree_id);
-	    }else{ // Currently on
-		level = 0;
-		if(idModeFlashCount == tree_id){
-		    idModeChangeTimer.set( tree_id == 1 ? 3000 : 2000 );
-		    idModeFlashCount = 0;
+		ETGPacket fakePacket;
+		byte level;
+		if(tree_id > 0){ // This tree has an id.
+			/* here we use idModeFlashCount thus:
+			  0 - idMode has just started, or had a pause;
+			  +ve : We've completed that many ID flashes;
+			  -ve: We've completed that many ID flashes, and the
+			interveening gap (so we're ready for 1 more flash) */
+			fakePacket.fadeTime = 0;
+			fakePacket.which_trees = 0xff;
+			if(idModeFlashCount <= 0){ // Currently off - turn on!
+			idModeFlashCount = -idModeFlashCount + 1;
+			level = 255;
+			idModeChangeTimer.set(2000 / tree_id);
+			}else{ // Currently on
+			level = 0;
+			if(idModeFlashCount == tree_id){
+				idModeChangeTimer.set( tree_id == 1 ? 3000 : 2000 );
+				idModeFlashCount = 0;
+			}else{
+				idModeChangeTimer.set(1000 / (tree_id - 1 ));
+				idModeFlashCount = - idModeFlashCount;
+			}
+			}
 		}else{
-		    idModeChangeTimer.set(1000 / (tree_id - 1 ));
-		    idModeFlashCount = - idModeFlashCount;
+			fakePacket.fadeTime = 1900;
+			idModeChangeTimer.set(2000);
+			if(idModeFlashCount){
+			level = 255;
+			idModeFlashCount = 0;
+			}else{
+			level = 0;
+			idModeFlashCount = -1;
+			}
 		}
-	    }
-	}else{
-	    fakePacket.fadeTime = 1900;
-	    idModeChangeTimer.set(2000);
-	    if(idModeFlashCount){
-		level = 255;
-		idModeFlashCount = 0;
-	    }else{
-		level = 0;
-		idModeFlashCount = -1;
-	    }
-	}
-	for(int i = 0; i < 16; i++){
-	    fakePacket.pwmLevels[i] = level;
-	}
-	FadeToTarget(fakePacket);
-    }
-    if(fadeRunning){
-        if(milliTimer.poll(10)){ //Returns true every 10 milliseconds;
-            unsigned long fadeHasRunFor = millis() - fadeStartMillis;
-            if(fadeHasRunFor >= fadeTimeMillis){
-                //We're done!
-                for(int i=0; i<16; i++){
-                    currentLevels[i] = targetLevels[i];
-                    milliTimer.set(0);
-                    fadeRunning = false;
-                }
-            }else{
-		Serial.print(fadeHasRunFor);
-		Serial.print(" ");
-		Serial.print(deltas[0]);
-		Serial.print(" ");
-                unsigned long ratio = ( fadeHasRunFor * 256 ) / fadeTimeMillis;
-		Serial.print(ratio);
-                for(int i=0; i<16; i++){
-                    currentLevels[i] = ( ( (long) deltas[i]  ) * ratio / 256)  + startLevels[i];
-                }
-		Serial.print(" ");
-		Serial.println((int) currentLevels[0]);
-            }
-	    /*
-	    for(int i = 0; i < 4 * 16; i++){
-		Serial.print(BACKSPACE);
-	    }
-	    for(int i = 0; i < 16; i++){
-		Serial.print(" ");
-		PrintByteWithLeadingZeroes(currentLevels[patch(i)]);
-	    } */
+		for(int i = 0; i < 16; i++){
+			fakePacket.pwmLevels[i] = level;
+		}
+		FadeToTarget(fakePacket);
+		}
+		if(fadeRunning){
+			if(milliTimer.poll(10)){ //Returns true every 10 milliseconds;
+				unsigned long fadeHasRunFor = millis() - fadeStartMillis;
+				if(fadeHasRunFor >= fadeTimeMillis){
+					//We're done!
+					for(int i=0; i<16; i++){
+						currentLevels[i] = targetLevels[i];
+						milliTimer.set(0);
+						fadeRunning = false;
+					}
+				}else{
+			Serial.print(fadeHasRunFor);
+			Serial.print(" ");
+			Serial.print(deltas[0]);
+			Serial.print(" ");
+					unsigned long ratio = ( fadeHasRunFor * 256 ) / fadeTimeMillis;
+			Serial.print(ratio);
+					for(int i=0; i<16; i++){
+						currentLevels[i] = ( ( (long) deltas[i]  ) * ratio / 256)  + startLevels[i];
+					}
+			Serial.print(" ");
+			Serial.println((int) currentLevels[0]);
+				}
+			/*
+			for(int i = 0; i < 4 * 16; i++){
+			Serial.print(BACKSPACE);
+			}
+			for(int i = 0; i < 16; i++){
+			Serial.print(" ");
+			PrintByteWithLeadingZeroes(currentLevels[patch(i)]);
+			} */
             dimmer.setMulti(dimmer.PWM0, currentLevels[patch( 0)], currentLevels[patch( 1)],
                                          currentLevels[patch( 2)], currentLevels[patch( 3)],
                                          currentLevels[patch( 4)], currentLevels[patch( 5)],
@@ -432,4 +446,24 @@ void loop() { //this is a work in progress
                                          currentLevels[patch(14)], currentLevels[patch(15)], -1);
         }
     }
+	/*if(pulseRunning) {
+		if(milliTimer.poll(pulseDelay)) {
+			targetLevels[patch(pulseIndex)] = 255;
+			currentLevels[patch( */
 }
+
+/*void PulseUp(int fade, int delay) {
+	pulseRunning = true;
+	milliTimer.set(10);
+	fadeTimeMillis = fade (this isn't right, need to consider delay and the fact that there are 16 leds to get through;
+	pulseDelay = delay;
+	fadeStartMillis = millis();
+	for(int i=0; i<16; i++){
+		currentLevels[i] = 0;
+		startLevels[i] = currentLevels[i];
+		targetLevels[i] = (i == 0) ? 255 : 0;
+		deltas[i] = ((int) targetLevels[i] ) - currentLevels[i];
+	}
+}*/
+
+	

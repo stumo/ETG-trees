@@ -1,6 +1,3 @@
-#ifndef __ETG_H__
-#define __ETG_H__
-
 ;typedef struct {
     byte nodeId;
     byte group;
@@ -137,6 +134,7 @@ byte threebit_to_byte(byte source){
 }
 
 void etg_pack(const ETGPacket& source, ETGPackedPacket& dest){
+	
 	dest.instrType = source.instrType ? 1 : 0;
 //	dest.elOn =      source.elOn      ? 1 : 0;
 	dest.pwmLevel_00 = byte_to_threebit( source.pwmLevels[ 0]  );
@@ -188,9 +186,9 @@ void etg_unpack(const ETGPackedPacket& source, ETGPacket& dest){
 	dest.fadeTime = transmitToMilli(source.fadeTime);
 }
 
-/*
+
 // RF12_DATA_RATE_3 and RF12_DATA_RATE_2.
-enum rf12DataRates {
+/*enum rf12DataRates {
     RF12_DATA_RATE_CMD = 0xC600,
     RF12_DATA_RATE_9 = RF12_DATA_RATE_CMD | 0x02, // Approx 115200 bps
     RF12_DATA_RATE_8 = RF12_DATA_RATE_CMD | 0x05, // Approx 57600 bps
@@ -202,12 +200,12 @@ enum rf12DataRates {
     RF12_DATA_RATE_2 = RF12_DATA_RATE_CMD | 0x91, // Approx 2400 bps
     RF12_DATA_RATE_1 = RF12_DATA_RATE_CMD | 0x9E, // Approx 1200 bps
     RF12_DATA_RATE_DEFAULT = RF12_DATA_RATE_7,
-};
-*/
+};*/
+
 
 void etg_rf12_setup(){
-  // rf12_control(RF12_DATA_RATE_5);
-  // Serial.println(	"Speed set to Data Rate 5");
+  rf12_control(RF12_DATA_RATE_1);
+  Serial.println("Speed set to Data Rate 1");
 
   // This wasn't working, no idea why
 }
@@ -223,5 +221,3 @@ void PrintByteWithLeadingZeroes(byte val){
 }
 
 static char BACKSPACE = 8;
-
-#endif // __ETG_H__
